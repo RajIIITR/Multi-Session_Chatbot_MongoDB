@@ -1,0 +1,27 @@
+# Core FastAPI dependencies
+fastapi
+uvicorn
+pydantic
+
+# Database dependencies
+motor  # Async MongoDB driver
+pymongo  # MongoDB driver
+langchain-mongodb  # LangChain MongoDB integration
+
+# LangChain dependencies
+langchain
+langchain-google-genai
+
+# Google Generative AI
+google-generativeai
+
+# Additional utilities
+python-dotenv  # Environment variable management
+python-multipart  # For form data handling
+
+# Frontend (Streamlit)
+streamlit
+requests  # For API calls from frontend
+
+# Development
+pytest
