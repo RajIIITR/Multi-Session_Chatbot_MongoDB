@@ -103,7 +103,7 @@ class ChatMessage(TypedDict):
     message: str
 
 class StreamlitChatStore:
-    """Streamlit-optimized chat store"""
+    """Streamlit-optimized chat store with SSL configuration"""
     
     def __init__(self):
         self.mongodb_url = config.MONGODB_URL
@@ -115,36 +115,97 @@ class StreamlitChatStore:
         # Initialize immediately
         self._init_sync_client()
     
+    def _get_mongodb_client_options(self):
+        """Get MongoDB client options with SSL configuration for Streamlit Cloud"""
+        return {
+            'tlsAllowInvalidCertificates': True,
+            'tlsInsecure': True,
+            'ssl': True,
+            'ssl_cert_reqs': 0,  # ssl.CERT_NONE equivalent
+            'connectTimeoutMS': 30000,
+            'socketTimeoutMS': 30000,
+            'serverSelectionTimeoutMS': 30000,
+            'maxPoolSize': 10,
+            'retryWrites': True,
+            'w': 'majority'
+        }
+    
     def _init_sync_client(self):
-        """Initialize sync client"""
+        """Initialize sync client with SSL configuration"""
         try:
             if not self.mongodb_url:
                 st.error("🔑 MongoDB URL not found in configuration!")
                 return False
-                
-            self.sync_client = MongoClient(self.mongodb_url)
+            
+            # Add SSL options to the connection
+            client_options = self._get_mongodb_client_options()
+            
+            self.sync_client = MongoClient(
+                self.mongodb_url,
+                **client_options
+            )
             self.sync_database = self.sync_client[self.database_name]
+            
+            # Test connection with timeout
             self.sync_client.admin.command('ping')
             print(f"✅ MongoDB sync client connected: {mask_secret(self.mongodb_url)}")
             return True
+            
         except Exception as e:
             st.error(f"MongoDB connection failed: {e}")
             print(f"❌ MongoDB connection error: {e}")
-            return False
+            
+            # Try alternative connection method
+            try:
+                st.info("🔄 Trying alternative connection method...")
+                # Use a simpler connection string approach
+                simple_client = MongoClient(
+                    self.mongodb_url,
+                    tlsAllowInvalidCertificates=True,
+                    serverSelectionTimeoutMS=5000
+                )
+                simple_client.admin.command('ping')
+                self.sync_client = simple_client
+                self.sync_database = self.sync_client[self.database_name]
+                st.success("✅ Connected using alternative method!")
+                return True
+            except Exception as e2:
+                st.error(f"Alternative connection also failed: {e2}")
+                return False
     
     def get_chat_history(self, session_id: str) -> MongoDBChatMessageHistory:
-        """Get LangChain MongoDB chat history for session"""
+        """Get LangChain MongoDB chat history for session with SSL configuration"""
         if session_id not in self.chat_histories:
-            self.chat_histories[session_id] = MongoDBChatMessageHistory(
-                connection_string=self.mongodb_url,
-                session_id=session_id,
-                database_name=self.database_name,
-                collection_name="chat_messages"
-            )
+            try:
+                # Create connection string with SSL parameters for LangChain
+                langchain_connection_string = self.mongodb_url
+                if "?" not in langchain_connection_string:
+                    langchain_connection_string += "?"
+                else:
+                    langchain_connection_string += "&"
+                
+                langchain_connection_string += "tlsAllowInvalidCertificates=true&ssl=true"
+                
+                self.chat_histories[session_id] = MongoDBChatMessageHistory(
+                    connection_string=langchain_connection_string,
+                    session_id=session_id,
+                    database_name=self.database_name,
+                    collection_name="chat_messages"
+                )
+            except Exception as e:
+                st.error(f"Error creating chat history: {e}")
+                # Fallback to basic connection
+                self.chat_histories[session_id] = MongoDBChatMessageHistory(
+                    connection_string=self.mongodb_url,
+                    session_id=session_id,
+                    database_name=self.database_name,
+                    collection_name="chat_messages"
+                )
+        
         return self.chat_histories[session_id]
     
     def store_chat_message(self, session_id: str, message: str, message_type: str = "human") -> bool:
-        """Store chat message"""
+        """Store chat message with error handling"""
         try:
             chat_history = self.get_chat_history(session_id)
             
@@ -157,9 +218,33 @@ class StreamlitChatStore:
             
             chat_history.add_message(langchain_message)
             return True
+            
         except Exception as e:
-            st.error(f"Error storing message: {e}")
-            return False
+            error_msg = str(e)
+            if "SSL" in error_msg or "TLS" in error_msg:
+                st.error("🔒 SSL Connection Issue detected")
+                st.info("This is a known issue with MongoDB Atlas on Streamlit Cloud. Trying workaround...")
+                
+                # Try to reinitialize connection
+                try:
+                    if session_id in self.chat_histories:
+                        del self.chat_histories[session_id]
+                    
+                    # Force reconnection
+                    self._init_sync_client()
+                    
+                    # Retry once
+                    chat_history = self.get_chat_history(session_id)
+                    chat_history.add_message(langchain_message)
+                    st.success("✅ Message stored successfully after retry!")
+                    return True
+                    
+                except Exception as e2:
+                    st.error(f"Retry failed: {str(e2)[:100]}...")
+                    return False
+            else:
+                st.error(f"Error storing message: {str(e)[:100]}...")
+                return False
     
     def get_chat_session(self, session_id: str) -> Optional[List[Dict[str, Any]]]:
         """Get chat session messages"""
