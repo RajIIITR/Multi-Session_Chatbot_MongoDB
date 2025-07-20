@@ -116,28 +116,28 @@ class StreamlitChatStore:
         self._init_sync_client()
     
     def _get_mongodb_client_options(self):
-        """Get MongoDB client options with SSL configuration for Streamlit Cloud"""
+        """Get MongoDB client options optimized for Streamlit Cloud"""
         return {
+            'tls': True,
             'tlsAllowInvalidCertificates': True,
-            'tlsInsecure': True,
-            'ssl': True,
-            'ssl_cert_reqs': 0,  # ssl.CERT_NONE equivalent
+            'tlsAllowInvalidHostnames': True,
             'connectTimeoutMS': 30000,
             'socketTimeoutMS': 30000,
             'serverSelectionTimeoutMS': 30000,
-            'maxPoolSize': 10,
+            'maxPoolSize': 1,  # Reduced for Streamlit Cloud
             'retryWrites': True,
             'w': 'majority'
         }
     
     def _init_sync_client(self):
-        """Initialize sync client with SSL configuration"""
+        """Initialize sync client with multiple fallback methods"""
+        if not self.mongodb_url:
+            st.error("🔑 MongoDB URL not found in configuration!")
+            return False
+        
+        # Method 1: Try with optimized SSL settings
         try:
-            if not self.mongodb_url:
-                st.error("🔑 MongoDB URL not found in configuration!")
-                return False
-            
-            # Add SSL options to the connection
+            st.info("🔄 Attempting MongoDB connection (Method 1: Optimized SSL)...")
             client_options = self._get_mongodb_client_options()
             
             self.sync_client = MongoClient(
@@ -145,33 +145,72 @@ class StreamlitChatStore:
                 **client_options
             )
             self.sync_database = self.sync_client[self.database_name]
-            
-            # Test connection with timeout
             self.sync_client.admin.command('ping')
+            st.success("✅ MongoDB connected successfully!")
             print(f"✅ MongoDB sync client connected: {mask_secret(self.mongodb_url)}")
             return True
             
-        except Exception as e:
-            st.error(f"MongoDB connection failed: {e}")
-            print(f"❌ MongoDB connection error: {e}")
+        except Exception as e1:
+            st.warning(f"Method 1 failed: {str(e1)[:100]}...")
             
-            # Try alternative connection method
+            # Method 2: Try with minimal SSL settings
             try:
-                st.info("🔄 Trying alternative connection method...")
-                # Use a simpler connection string approach
-                simple_client = MongoClient(
+                st.info("🔄 Trying Method 2: Minimal SSL settings...")
+                self.sync_client = MongoClient(
                     self.mongodb_url,
                     tlsAllowInvalidCertificates=True,
-                    serverSelectionTimeoutMS=5000
+                    serverSelectionTimeoutMS=10000,
+                    connectTimeoutMS=10000
                 )
-                simple_client.admin.command('ping')
-                self.sync_client = simple_client
                 self.sync_database = self.sync_client[self.database_name]
-                st.success("✅ Connected using alternative method!")
+                self.sync_client.admin.command('ping')
+                st.success("✅ MongoDB connected with Method 2!")
                 return True
+                
             except Exception as e2:
-                st.error(f"Alternative connection also failed: {e2}")
-                return False
+                st.warning(f"Method 2 failed: {str(e2)[:100]}...")
+                
+                # Method 3: Try without SSL (if connection string allows)
+                try:
+                    st.info("🔄 Trying Method 3: Modified connection string...")
+                    # Create a modified connection string for testing
+                    modified_url = self.mongodb_url.replace("mongodb+srv://", "mongodb://")
+                    if "?" in modified_url:
+                        modified_url = modified_url.split("?")[0]
+                    
+                    # This won't work for Atlas, but let's try original with different params
+                    self.sync_client = MongoClient(
+                        self.mongodb_url,
+                        tls=True,
+                        tlsAllowInvalidCertificates=True,
+                        directConnection=False,
+                        serverSelectionTimeoutMS=5000
+                    )
+                    self.sync_database = self.sync_client[self.database_name]
+                    self.sync_client.admin.command('ping')
+                    st.success("✅ MongoDB connected with Method 3!")
+                    return True
+                    
+                except Exception as e3:
+                    st.error("❌ All MongoDB connection methods failed!")
+                    st.error("This appears to be a Streamlit Cloud + MongoDB Atlas SSL compatibility issue.")
+                    
+                    # Show detailed error info
+                    with st.expander("🔍 Detailed Error Information"):
+                        st.code(f"Method 1 Error: {str(e1)}")
+                        st.code(f"Method 2 Error: {str(e2)}")
+                        st.code(f"Method 3 Error: {str(e3)}")
+                    
+                    # Provide solutions
+                    st.info("💡 **Possible Solutions:**")
+                    st.markdown("""
+                    1. **Try a different MongoDB provider** (like MongoDB Community on Railway/Heroku)
+                    2. **Use local MongoDB** for development
+                    3. **Switch to a different database** (PostgreSQL, SQLite)
+                    4. **Use MongoDB Realm/Atlas Functions** as a proxy
+                    """)
+                    
+                    return False
     
     def get_chat_history(self, session_id: str) -> MongoDBChatMessageHistory:
         """Get LangChain MongoDB chat history for session with SSL configuration"""
